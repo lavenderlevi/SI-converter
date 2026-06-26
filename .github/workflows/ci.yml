@@ -1,0 +1,146 @@
+name: CI — Test & Lint
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: "Python ${{ matrix.python-version }} Tests"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - name: ⬇️ Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: 📦 Install package + dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,api]"
+
+      - name: ✅ Run tests with coverage
+        run: |
+          pytest tests/ -v \
+            --tb=short \
+            --cov=si_converter \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=85
+
+      - name: 📊 Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: matrix.python-version == '3.11'
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  lint:
+    name: "Lint & Type Check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 📦 Install lint tools
+        run: |
+          pip install ruff pyright
+
+      - name: 🔍 Ruff lint
+        run: ruff check si_converter/ tests/
+
+      - name: 🔎 Pyright type check
+        run: pyright si_converter/
+        continue-on-error: true   # type hints chưa đầy đủ → cảnh báo, không fail
+
+  api-smoke-test:
+    name: "API Smoke Test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 📦 Install
+        run: pip install -e ".[dev,api]"
+
+      - name: 🚀 Start API server (background)
+        run: |
+          uvicorn api:app --host 0.0.0.0 --port 8000 &
+          sleep 4   # đợi server khởi động
+
+      - name: 🔥 Smoke test endpoints
+        run: |
+          # Health check
+          curl -sf http://localhost:8000/health | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['status'] == 'ok', f'Health check failed: {d}'
+          print('✅ /health OK')
+          "
+
+          # POST /convert — eV → joule
+          curl -sf -X POST http://localhost:8000/convert \
+            -H "Content-Type: application/json" \
+            -d '{"value": 1, "unit": "eV"}' | python -c "
+          import sys, json, math
+          d = json.load(sys.stdin)
+          assert math.isclose(d['value_out'], 1.602176634e-19, rel_tol=1e-5), f'eV test failed: {d}'
+          print('✅ /convert eV OK')
+          "
+
+          # POST /convert — 100 degC → 373.15 K
+          curl -sf -X POST http://localhost:8000/convert \
+            -H "Content-Type: application/json" \
+            -d '{"value": 100, "unit": "degC"}' | python -c "
+          import sys, json, math
+          d = json.load(sys.stdin)
+          assert math.isclose(d['value_out'], 373.15, rel_tol=1e-4), f'degC test failed: {d}'
+          print('✅ /convert degC OK')
+          "
+
+          # POST /convert/semiconductor — hartree
+          curl -sf -X POST http://localhost:8000/convert/semiconductor \
+            -H "Content-Type: application/json" \
+            -d '{"value": 1, "unit": "hartree"}' | python -c "
+          import sys, json, math
+          d = json.load(sys.stdin)
+          assert math.isclose(d['value_out'], 4.3597447e-18, rel_tol=1e-4), f'hartree test failed: {d}'
+          print('✅ /convert/semiconductor hartree OK')
+          "
+
+          # GET /units/validate
+          curl -sf "http://localhost:8000/units/validate?unit=eV" | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['valid'] == True, f'validate failed: {d}'
+          print('✅ /units/validate OK')
+          "
+
+          # GET /constants
+          curl -sf "http://localhost:8000/constants?search=Planck" | python -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert len(d) > 0, 'constants returned empty'
+          print(f'✅ /constants OK ({len(d)} results)')
+          "
+
+          echo ""
+          echo "🎉 Tất cả smoke tests PASSED!"

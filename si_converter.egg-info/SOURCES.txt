@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+si_converter/__init__.py
+si_converter/core.py
+si_converter/semiconductor.py
+si_converter.egg-info/PKG-INFO
+si_converter.egg-info/SOURCES.txt
+si_converter.egg-info/dependency_links.txt
+si_converter.egg-info/requires.txt
+si_converter.egg-info/top_level.txt
+tests/test_si_converter.py
